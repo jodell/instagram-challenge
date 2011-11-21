@@ -3,25 +3,69 @@ require 'matrix'
 require 'chunky_png'
 require 'pp'
 
+require './standard_deviation'
+
 class JumbledImage
-  attr_accessor :strips, :raw, :matrix, :rows, :cols, :strip_size
+  attr_accessor :file, :strips, :raw, :matrix, :rows, :cols, :strip_size
 
   def initialize(file)
+    @file = file
     @raw = ChunkyPNG::Image.from_file file
-    self
-  end
-
-  def build(strip_size)
-    @rows, @cols, @strip_size = @raw.height, @raw.width, strip_size
-    @raw.pixels.each_slice(@cols) { |a| (@matrix ||= []) << a }
+    @raw.pixels.each_slice(@raw.width) { |a| (@matrix ||= []) << a }
     @matrix = Matrix[*@matrix]
-    stripper
+    puts "Initialized #{@raw.width}x#{@raw.height} image"
     self
   end
 
-  def stripper(size = strip_size)
+  def guess_strip_size
+    puts "Guessing strip size... (this could take a while)"
+    guess, all_avgs = [], []
+    prev = @matrix.column_vectors.first
+    @matrix.column_vectors.each_with_index do |current, i|
+      next if prev == current || i > @matrix.column_size - 3
+      next_ = @matrix.column_vectors[@matrix.column_vectors.index(current) + 1]
+      next_next = @matrix.column_vectors[@matrix.column_vectors.index(current) + 2]
+
+      #[i, i + 1, i + 2].each do |index|
+      #  unless all_avgs[index]
+      #    tmp = []
+      #    prev.zip(current) { |a1, a2| tmp << (a1 - a2).abs }
+      #    all_avgs[index] = tmp.reduce(0.0) { |acc, e| acc += e } / tmp.size
+      #  end
+      #end
+
+      unless all_avgs[i]
+        tmp = []
+        prev.zip(current) { |a1, a2| tmp << (a1 - a2).abs }
+        all_avgs[i] = tmp.reduce(0.0) { |acc, e| acc += e } / tmp.size
+      end
+     
+      unless all_avgs[i + 1]
+        tmp = []
+        current.zip(next_) { |a1, a2| tmp << (a1 - a2).abs }
+        all_avgs[i + 1] = tmp.reduce(0.0) { |acc, e| acc += e } / tmp.size
+      end
+     
+      unless all_avgs[i + 2]
+        tmp = []
+        next_.zip(next_next) { |a1, a2| tmp << (a1 - a2).abs }
+        all_avgs[i + 2] = tmp.reduce(0.0) { |acc, e| acc += e } / tmp.size
+      end
+
+      if (all_avgs[i + 1] / [all_avgs[i], all_avgs[i + 1], all_avgs[i + 2]].mean) > 1.3 # 150%, should be statistic
+        guess << i + 1
+      end
+
+      prev = current
+    end
+    (guess.sum / (1..guess.size).inject(:+)).floor
+  end
+
+  def stripper(size = guess_strip_size)
+    @strip_size = size
+    puts "Configuring with strip size: #{size}"
     @strips ||= []
-    (strip_size..@matrix.column_size).step(size) do |i|
+    (@strip_size..@matrix.column_size).step(size) do |i|
       @strips << Strip.new(@matrix.minor(0..@matrix.row_size, (i - size)..(i - 1)))
     end
     @strips
@@ -32,11 +76,13 @@ class JumbledImage
     ChunkyPNG::Canvas.new(joined.first.size, joined.size, joined.flatten)
   end
 
-  def save(_strips, filename = 'foo.png')
+  def save(_strips, filename = nil)
+    filename ||= @file.sub(/\.png/, '-solved.png')
     File.open(filename, 'wb' ) { |io| to_png(_strips).to_image.write(io) }
   end
 
-  def save_and_open(_strips = @strips, filename = 'foo.png')
+  def save_and_open(_strips = @strips, filename = nil)
+    filename ||= @file.sub(/\.png/, '-solved.png')
     save(_strips, filename) and `open #{filename}`
   end
 
@@ -67,7 +113,9 @@ class JumbledImage
     strips[i]
   end
 
-  def unjumble(filename = nil)
+  def unjumble(filename = nil, strip_size = nil)
+    puts "Unjumbling..."
+    stripper(strip_size.to_i)
     check_all
     final, current = [], leftmost
     solution_order = [current]
@@ -157,5 +205,6 @@ end
 
 # 640x359 32 pixels
 src = ARGV[0] || 'test/tokyo-shredded.png'
-ji = JumbledImage.new(src).build(32)
-ji.unjumble src.sub(/\.png/, '-sol.png')
+#ji = JumbledImage.new(src).build(32)
+#ji.unjumble src.sub(/\.png/, '-sol.png')
+ji = JumbledImage.new(src).unjumble(nil, ARGV[1] || nil)
